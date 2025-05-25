@@ -1,0 +1,76 @@
+# Variáveis de Ambiente
+$resourceGroup = "RG-Arquivos"
+$storageAccount = "nomedostorage"
+$data = Get-Date -Format "yyyyMMdd-HHmmss"
+$logFile = "C:\Temp\Reidratacao-Log-$data.csv"
+
+# Verifica se a pasta de log existe, se não cria
+if (!(Test-Path -Path "C:\Temp")) {
+    New-Item -ItemType Directory -Path "C:\Temp"
+}
+
+# Login no Azure (se ainda não)
+Connect-AzAccount
+
+# Obter Contexto do Storage Account
+$ctx = (Get-AzStorageAccount -ResourceGroupName $resourceGroup -Name $storageAccount).Context
+
+# Obter todos os containers no Storage Account
+$containers = Get-AzStorageContainer -Context $ctx
+
+# Lista para gerar log
+$log = @()
+
+foreach ($container in $containers) {
+    Write-Host "🔍 Processando Container: $($container.Name)" -ForegroundColor Yellow
+
+    # Obter blobs no container
+    $blobs = Get-AzStorageBlob -Container $container.Name -Context $ctx
+
+    # Filtrar blobs na camada Archive
+    $archiveBlobs = $blobs | Where-Object { $_.BlobTier -eq "Archive" }
+
+    Write-Host "📦 Encontrados $($archiveBlobs.Count) blobs na camada Archive no container $($container.Name)" -ForegroundColor Cyan
+
+    foreach ($blob in $archiveBlobs) {
+        try {
+            Write-Host "♻️ Iniciando reidratação do blob: $($blob.Name)" -ForegroundColor Magenta
+
+            # Executa a reidratação para Hot
+            Set-AzStorageBlobTier -Context $ctx `
+                                   -Container $container.Name `
+                                   -Blob $blob.Name `
+                                   -Tier Hot
+
+            Write-Host "✅ Reidratação solicitada com sucesso para: $($blob.Name)" -ForegroundColor Green
+
+            # Adiciona no log
+            $log += [PSCustomObject]@{
+                Data             = (Get-Date)
+                Container        = $container.Name
+                Blob             = $blob.Name
+                BlobTierAnterior = $blob.BlobTier
+                Status           = "Reidratação Solicitada"
+            }
+        }
+        catch {
+            Write-Host "❌ Erro ao tentar reidratar o blob: $($blob.Name)" -ForegroundColor Red
+            Write-Host $_.Exception.Message -ForegroundColor DarkRed
+
+            # Loga erro também
+            $log += [PSCustomObject]@{
+                Data             = (Get-Date)
+                Container        = $container.Name
+                Blob             = $blob.Name
+                BlobTierAnterior = $blob.BlobTier
+                Status           = "Erro: $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
+# Exporta log para CSV
+$log | Export-Csv -Path $logFile -NoTypeInformation -Encoding UTF8
+
+Write-Host "📑 Log salvo em: $logFile" -ForegroundColor Yellow
+Write-Host "🚀 Processo de reidratação concluído." -ForegroundColor Green
